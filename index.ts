@@ -217,7 +217,7 @@ bot.on('message', async (ctx) => {
   const repliedToMessage = ctx.message?.reply_to_message;
 
   if (!userTgId || !message) {
-    return handleError(ctx, 'Произошла ошибка при обработке сообщения!');
+    return;
   }
 
   const matchedObsiralka = await prisma.specialResponse.findFirst({
