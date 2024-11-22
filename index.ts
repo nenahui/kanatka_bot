@@ -1,6 +1,6 @@
-import { Bot, type Context, GrammyError, HttpError } from 'grammy';
+import { PrismaClient, type SpecialResponse, type Word } from '@prisma/client';
 import { configDotenv } from 'dotenv';
-import { PrismaClient, type Word } from '@prisma/client';
+import { Bot, type Context, GrammyError, HttpError } from 'grammy';
 import { COMMANDS } from './constants';
 
 configDotenv();
@@ -11,15 +11,37 @@ const superUser = process.env.SUPER_ADMIN_ID as string;
 
 const userStates: Record<number, string> = {};
 
-const STATES = {
+interface States {
+  WAITING_FOR_NEW_NAME: 'waiting_for_new_name';
+  WAITING_FOR_NEW_WORD: 'waiting_for_new_word';
+  WAITING_FOR_DELETE_WORD: 'waiting_for_delete_word';
+  WAITING_FOR_NEW_OBSIRALKA: 'waiting_for_new_obsiralka';
+  WAITING_FOR_ADD_WORD_TO_OBSIRALKA: 'waiting_for_add_word_to_obsiralka';
+  WAITING_FOR_NEW_WORD_OBSIRALKA: 'waiting_for_new_word_obsiralka';
+  OBSIRALKA_ID: number | null;
+  OBSIRALKI: SpecialResponse[];
+}
+
+const STATES: States = {
   WAITING_FOR_NEW_NAME: 'waiting_for_new_name',
   WAITING_FOR_NEW_WORD: 'waiting_for_new_word',
   WAITING_FOR_DELETE_WORD: 'waiting_for_delete_word',
+  WAITING_FOR_NEW_OBSIRALKA: 'waiting_for_new_obsiralka',
+  WAITING_FOR_ADD_WORD_TO_OBSIRALKA: 'waiting_for_add_word_to_obsiralka',
+  WAITING_FOR_NEW_WORD_OBSIRALKA: 'waiting_for_new_word_obsiralka',
+  OBSIRALKA_ID: null,
+  OBSIRALKI: [],
 };
 
 const ROLE = {
   MODERATOR: 'moderator',
   USER: 'user',
+};
+
+const getObsiralki = async () => {
+  const obsiralki = await prisma.specialResponse.findMany();
+  STATES.OBSIRALKI = obsiralki;
+  return obsiralki;
 };
 
 const handleError = (ctx: Context, message: string) => ctx.reply(message);
@@ -93,7 +115,7 @@ bot.hears('!команды', async (ctx) => {
   const user = await getUser(userTgId);
 
   if (user?.role === ROLE.USER) {
-    return ctx.reply('У вас нет прав для добавления новых слов.');
+    return ctx.reply('У вас нет прав для просмотра списка команд.');
   }
 
   let response: string = '<b>Мои команды для особо одаренных 🤪:\n\n</b>';
@@ -112,7 +134,7 @@ bot.hears('!список слов', async (ctx) => {
   const user = await getUser(userTgId);
 
   if (user?.role === ROLE.USER) {
-    return ctx.reply('У вас нет прав для добавления новых слов.');
+    return ctx.reply('У вас нет прав для просмотра списка.');
   }
 
   const words = await prisma.word.findMany();
@@ -139,6 +161,56 @@ bot.hears('!удалить слово', async (ctx) => {
   await ctx.reply('Введите номер слова, которое хотите удалить:');
 });
 
+bot.hears('!добавить обсиралку', async (ctx) => {
+  const userTgId = ctx.from?.id;
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
+
+  const user = await getUser(userTgId);
+
+  if (user?.role === ROLE.USER) {
+    return ctx.reply('У вас нет прав для добавления обсиралки.');
+  }
+
+  await getObsiralki();
+
+  userStates[userTgId] = STATES.WAITING_FOR_NEW_OBSIRALKA;
+  await ctx.reply('Введите слово на отклик:');
+});
+
+bot.hears('!добавить слово в обсиралку', async (ctx) => {
+  const userTgId = ctx.from?.id;
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
+
+  const user = await getUser(userTgId);
+
+  if (user?.role === ROLE.USER) {
+    return ctx.reply('У вас нет прав для добавления слов в обсиралку.');
+  }
+
+  await getObsiralki();
+
+  userStates[userTgId] = STATES.WAITING_FOR_ADD_WORD_TO_OBSIRALKA;
+  await ctx.reply('Введите айди обсиралки, к которой хотите добавить слово:');
+});
+
+bot.hears('!список обсиралок', async (ctx) => {
+  const userTgId = ctx.from?.id;
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
+
+  const user = await getUser(userTgId);
+
+  if (user?.role === ROLE.USER) {
+    return ctx.reply('У вас нет прав для добавления слов в обсиралку.');
+  }
+
+  await getObsiralki();
+  const response = STATES.OBSIRALKI.map((obsiralka) => {
+    return `<b>${obsiralka.id}.</b> ${obsiralka.trigger}\n<b>Слова:</b>\n${obsiralka.words.join(', ')}`;
+  }).join('\n\n');
+
+  await ctx.reply(`<blockquote><b>Список всех обсиралок:</b>\n\n${response}</blockquote>`, { parse_mode: 'HTML' });
+});
+
 bot.on('message', async (ctx) => {
   const userTgId = ctx.from?.id;
   const message = ctx.message?.text;
@@ -146,6 +218,21 @@ bot.on('message', async (ctx) => {
 
   if (!userTgId || !message) {
     return handleError(ctx, 'Произошла ошибка при обработке сообщения!');
+  }
+
+  const matchedObsiralka = await prisma.specialResponse.findFirst({
+    where: { trigger: message },
+  });
+
+  if (matchedObsiralka) {
+    const words = matchedObsiralka.words;
+    if (words.length > 0) {
+      const randomWord = words[Math.floor(Math.random() * words.length)];
+      await ctx.reply(randomWord, { reply_to_message_id: ctx.message.message_id });
+    } else {
+      await ctx.reply('Для этой обсиралки пока нет слов.', { reply_to_message_id: ctx.message.message_id });
+    }
+    return;
   }
 
   if ((message === '!повысить' || message === '!понизить') && repliedToMessage) {
@@ -182,6 +269,54 @@ bot.on('message', async (ctx) => {
     } else {
       return handleError(ctx, 'Чепушила, ты не достоин этой команды!');
     }
+  }
+
+  if (userStates[userTgId] === STATES.WAITING_FOR_ADD_WORD_TO_OBSIRALKA) {
+    const obsiralkaId = parseInt(message);
+    if (isNaN(obsiralkaId)) {
+      userStates[userTgId] = '';
+      return ctx.reply('Айди обсиралки должно быть числом.');
+    }
+
+    const obsiralka = STATES.OBSIRALKI.find((item) => item.id === obsiralkaId);
+    if (!obsiralka) {
+      return ctx.reply(`Обсиралка с айди ${obsiralkaId} не найдена.`);
+    }
+
+    userStates[userTgId] = `${STATES.WAITING_FOR_NEW_WORD_OBSIRALKA}/${obsiralkaId}`;
+
+    await ctx.reply('Введите слово, которое хотите добавить в обсиралку:');
+    return;
+  }
+
+  if (userStates[userTgId]?.startsWith(STATES.WAITING_FOR_NEW_WORD_OBSIRALKA)) {
+    const [_, obsiralkaId] = userStates[userTgId].split('/');
+    const obsiralka = STATES.OBSIRALKI.find((item) => item.id === parseInt(obsiralkaId));
+
+    if (!obsiralka) {
+      userStates[userTgId] = '';
+      return handleError(ctx, 'Обсиралка не найдена.');
+    }
+
+    const word = message.trim();
+    await prisma.specialResponse.update({
+      where: { id: obsiralka.id },
+      data: {
+        words: {
+          push: word,
+        },
+      },
+    });
+
+    userStates[userTgId] = '';
+    return ctx.reply(`Слово "${word}" успешно добавлено к обсиралке.`);
+  }
+
+  if (userStates[userTgId] === STATES.WAITING_FOR_NEW_OBSIRALKA) {
+    const trigger = message;
+    await prisma.specialResponse.create({ data: { trigger, words: [] } });
+    userStates[userTgId] = '';
+    return ctx.reply(`Обсиралка успешно добавлена: ${trigger}`);
   }
 
   if (userStates[userTgId] === STATES.WAITING_FOR_NEW_NAME) {

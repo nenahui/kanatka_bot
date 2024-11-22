@@ -24,3 +24,11 @@ model Word {
   createdAt DateTime @default(now())
   userId    Int
 }
+
+model SpecialResponse {
+  id      Int      @id @default(autoincrement())
+  words   String[]
+  trigger String   @unique
+
+  createdAt DateTime @default(now())
+}
