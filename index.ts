@@ -1,88 +1,167 @@
-import { Bot, GrammyError, HttpError, Keyboard } from 'grammy';
+import { Bot, GrammyError, HttpError } from 'grammy';
 import { configDotenv } from 'dotenv';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Word } from '@prisma/client';
 
 configDotenv();
 
 const bot = new Bot(process.env.TOKEN as string);
 const prisma = new PrismaClient();
+const superUser = process.env.SUPER_ADMIN_ID as string;
 
 const userStates: Record<number, string> = {};
+
+const STATES = {
+  WAITING_FOR_NEW_NAME: 'waiting_for_new_name',
+  WAITING_FOR_NEW_WORD: 'waiting_for_new_word',
+};
+
+const ROLE = {
+  MODERATOR: 'moderator',
+  USER: 'user',
+};
+
+const handleError = (ctx: any, message: string) => ctx.reply(message);
+
+const getUser = async (userTgId: number) => {
+  return prisma.user.findFirst({ where: { userTgId } });
+};
+
+const addWord = async (userTgId: number, word: string) => {
+  await prisma.word.create({ data: { word, author: { connect: { userTgId } } } });
+};
+
+const updateUserName = async (userTgId: number, newName: string) => {
+  await prisma.user.update({
+    where: { userTgId },
+    data: { fullName: newName },
+  });
+};
 
 bot.command('start', async (ctx) => {
   const userTgId = ctx.from?.id;
   const fullName = `${ctx.from?.first_name || ''} ${ctx.from?.last_name || ''}`.trim();
   const username = ctx.from?.username;
-  const startKeyboard = new Keyboard().text('Изменить имя').text('Добавить слово').resized();
 
   if (!userTgId || !username) {
-    return ctx.reply('Произошла ошибка при получении данных о пользователе!');
+    return handleError(
+      ctx,
+      'Произошла ошибка при получении данных о пользователе!\nВозможно у вас неуказан юзернейм в профиле.',
+    );
   }
 
-  const isUserExist = await prisma.user.findFirst({
-    where: { userTgId },
-  });
+  const isUserExist = await getUser(userTgId);
 
   if (isUserExist) {
-    return ctx.reply(`Привет! ${isUserExist.fullName}\nОбсирать любишь да?)`, {
-      reply_markup: startKeyboard,
-    });
+    return ctx.reply(`С возвращением ${isUserExist.fullName}👏\nДобавь меня в группу и веселись🎉`);
   }
 
   const user = await prisma.user.create({
     data: { userTgId, fullName, username },
   });
 
-  await ctx.reply(`Привет! ${user.fullName}\nОбсирать любишь да?)`, {
-    reply_markup: startKeyboard,
-  });
+  return ctx.reply(`Салам! ${user.fullName}👏\nДобавь меня в группу и веселись🎉`);
 });
 
-bot.hears('Изменить имя', async (ctx) => {
+bot.hears('!изменить имя', async (ctx) => {
   const userTgId = ctx.from?.id;
-  if (!userTgId) {
-    return ctx.reply('Произошла ошибка при получении данных о пользователе!');
-  }
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
 
-  userStates[userTgId] = 'waiting_for_new_name';
+  userStates[userTgId] = STATES.WAITING_FOR_NEW_NAME;
   await ctx.reply('Введите новое имя:');
 });
 
-bot.hears('Добавить слово', async (ctx) => {
+bot.hears('!добавить слово', async (ctx) => {
   const userTgId = ctx.from?.id;
-  if (!userTgId) {
-    return ctx.reply('Произошла ошибка при получении данных о пользователе!');
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
+
+  const user = await getUser(userTgId);
+
+  if (user?.role === ROLE.USER) {
+    return ctx.reply('У вас нет прав для добавления новых слов.');
   }
 
-  userStates[userTgId] = 'waiting_for_new_word';
+  userStates[userTgId] = STATES.WAITING_FOR_NEW_WORD;
   await ctx.reply('Введите слово:');
 });
 
 bot.on('message', async (ctx) => {
   const userTgId = ctx.from?.id;
   const message = ctx.message?.text;
+  const repliedToMessage = ctx.message?.reply_to_message;
 
   if (!userTgId || !message) {
-    return ctx.reply('Произошла ошибка при обработке сообщения!');
+    return handleError(ctx, 'Произошла ошибка при обработке сообщения!');
   }
 
-  if (userStates[userTgId] === 'waiting_for_new_name') {
-    await prisma.user.update({
-      where: { userTgId },
-      data: { fullName: message },
-    });
+  if ((message === '!повысить' || message === '!понизить') && repliedToMessage) {
+    if (String(userTgId) === superUser) {
+      const targetUserId = repliedToMessage.from?.id;
 
-    userStates[userTgId] = '';
-    await ctx.reply(`Имя успешно изменено на ${message}`);
+      if (!targetUserId) return handleError(ctx, 'Не удалось определить пользователя для повышения.');
+
+      const targetUser = await getUser(targetUserId);
+
+      if (!targetUser) return handleError(ctx, 'Этот пользователь не зарегистрирован у меня.');
+
+      if (message === '!повысить' && targetUser.role === ROLE.MODERATOR) {
+        return handleError(ctx, 'Этот пользователь уже имеет роль модератора.');
+      }
+
+      if (message === '!понизить' && targetUser.role === ROLE.USER) {
+        return handleError(ctx, 'Этот пользователь уже имеет роль пользователя.');
+      }
+
+      if (message === '!повысить') {
+        await prisma.user.update({
+          where: { userTgId: targetUserId },
+          data: { role: ROLE.MODERATOR },
+        });
+        return ctx.reply(`Пользователь ${targetUser.fullName} успешно повышен до модератора.`);
+      } else {
+        await prisma.user.update({
+          where: { userTgId: targetUserId },
+          data: { role: ROLE.USER },
+        });
+        return ctx.reply(`Пользователь ${targetUser.fullName} успешно понижен до дебила.`);
+      }
+    } else {
+      return handleError(ctx, 'Чепушила, ты не достоин этой команды!');
+    }
   }
 
-  if (userStates[userTgId] === 'waiting_for_new_word') {
-    await prisma.word.create({
-      data: { word: message, author: { connect: { userTgId } } },
-    });
-
+  if (userStates[userTgId] === STATES.WAITING_FOR_NEW_NAME) {
+    await updateUserName(userTgId, message);
     userStates[userTgId] = '';
-    await ctx.reply(`Слово успешно добавлено: ${message}`);
+    return ctx.reply(`Имя успешно изменено на ${message}`);
+  }
+
+  if (userStates[userTgId] === STATES.WAITING_FOR_NEW_WORD) {
+    await addWord(userTgId, message);
+    userStates[userTgId] = '';
+    return ctx.reply(`Слово успешно добавлено: ${message}`);
+  }
+
+  if (repliedToMessage?.from?.id === ctx.me.id) {
+    const randomWordResponse = (await prisma.$queryRawUnsafe(
+      `SELECT * FROM "Word" ORDER BY RANDOM() LIMIT 1;`,
+    )) as Word[];
+    const randomWord = randomWordResponse[0];
+
+    if (randomWord) {
+      await ctx.reply(randomWord.word, { reply_to_message_id: ctx.message.message_id });
+    }
+    return;
+  }
+
+  if (Math.random() < 0.05) {
+    const randomWordResponse = (await prisma.$queryRawUnsafe(
+      `SELECT * FROM "Word" ORDER BY RANDOM() LIMIT 1;`,
+    )) as Word[];
+    const randomWord = randomWordResponse[0];
+
+    if (randomWord) {
+      await ctx.reply(randomWord.word, { reply_to_message_id: ctx.message.message_id });
+    }
   }
 });
 
@@ -106,6 +185,7 @@ process.on('SIGINT', async () => {
   await prisma.$disconnect();
   await bot.stop();
 });
+
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();
   await bot.stop();
