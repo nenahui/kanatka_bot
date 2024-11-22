@@ -1,4 +1,4 @@
-import { Bot, GrammyError, HttpError } from 'grammy';
+import { Bot, type Context, GrammyError, HttpError } from 'grammy';
 import { configDotenv } from 'dotenv';
 import { PrismaClient, type Word } from '@prisma/client';
 import { COMMANDS } from './constants';
@@ -14,6 +14,7 @@ const userStates: Record<number, string> = {};
 const STATES = {
   WAITING_FOR_NEW_NAME: 'waiting_for_new_name',
   WAITING_FOR_NEW_WORD: 'waiting_for_new_word',
+  WAITING_FOR_DELETE_WORD: 'waiting_for_delete_word',
 };
 
 const ROLE = {
@@ -21,7 +22,7 @@ const ROLE = {
   USER: 'user',
 };
 
-const handleError = (ctx: any, message: string) => ctx.reply(message);
+const handleError = (ctx: Context, message: string) => ctx.reply(message);
 
 const getUser = async (userTgId: number) => {
   return prisma.user.findFirst({ where: { userTgId } });
@@ -86,6 +87,15 @@ bot.hears('!добавить слово', async (ctx) => {
 });
 
 bot.hears('!команды', async (ctx) => {
+  const userTgId = ctx.from?.id;
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
+
+  const user = await getUser(userTgId);
+
+  if (user?.role === ROLE.USER) {
+    return ctx.reply('У вас нет прав для добавления новых слов.');
+  }
+
   let response: string = '<b>Мои команды для особо одаренных 🤪:\n\n</b>';
 
   COMMANDS.forEach((command) => {
@@ -93,6 +103,40 @@ bot.hears('!команды', async (ctx) => {
   });
 
   await ctx.reply(`<blockquote>${response}</blockquote>`, { parse_mode: 'HTML' });
+});
+
+bot.hears('!список слов', async (ctx) => {
+  const userTgId = ctx.from?.id;
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
+
+  const user = await getUser(userTgId);
+
+  if (user?.role === ROLE.USER) {
+    return ctx.reply('У вас нет прав для добавления новых слов.');
+  }
+
+  const words = await prisma.word.findMany();
+  const response = words
+    .map((word) => {
+      return `<b>${word.id}.</b> ${word.word}`;
+    })
+    .join('\n\n');
+
+  await ctx.reply(`<blockquote><b>Список всех слов:</b>\n\n${response}</blockquote>`, { parse_mode: 'HTML' });
+});
+
+bot.hears('!удалить слово', async (ctx) => {
+  const userTgId = ctx.from?.id;
+  if (!userTgId) return handleError(ctx, 'Произошла ошибка при получении данных о пользователе!');
+
+  const user = await getUser(userTgId);
+
+  if (user?.role === ROLE.USER) {
+    return ctx.reply('У вас нет прав для добавления новых слов.');
+  }
+
+  userStates[userTgId] = STATES.WAITING_FOR_DELETE_WORD;
+  await ctx.reply('Введите номер слова, которое хотите удалить:');
 });
 
 bot.on('message', async (ctx) => {
@@ -144,6 +188,20 @@ bot.on('message', async (ctx) => {
     await updateUserName(userTgId, message);
     userStates[userTgId] = '';
     return ctx.reply(`Имя успешно изменено на ${message}`);
+  }
+
+  if (userStates[userTgId] === STATES.WAITING_FOR_DELETE_WORD) {
+    const wordId = parseInt(message);
+    if (isNaN(wordId)) {
+      return ctx.reply('Номер слова должен быть числом.');
+    }
+    const isExistsWord = await prisma.word.findFirst({ where: { id: wordId } });
+    if (!isExistsWord) {
+      return ctx.reply(`Такого слова с номером ${wordId} не существует.`);
+    }
+    await prisma.word.delete({ where: { id: wordId } });
+    userStates[userTgId] = '';
+    return ctx.reply(`Слово с номером ${wordId} успешно удалено.`);
   }
 
   if (userStates[userTgId] === STATES.WAITING_FOR_NEW_WORD) {
