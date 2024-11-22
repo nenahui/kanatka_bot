@@ -1,6 +1,7 @@
 import { Bot, GrammyError, HttpError } from 'grammy';
 import { configDotenv } from 'dotenv';
 import { PrismaClient, type Word } from '@prisma/client';
+import { COMMANDS } from './constants';
 
 configDotenv();
 
@@ -84,6 +85,16 @@ bot.hears('!добавить слово', async (ctx) => {
   await ctx.reply('Введите слово:');
 });
 
+bot.hears('!команды', async (ctx) => {
+  let response: string = '<b>Мои команды для особо одаренных 🤪:\n\n</b>';
+
+  COMMANDS.forEach((command) => {
+    response += `<code>${command.name}</code>: ${command.description}\n\n`;
+  });
+
+  await ctx.reply(`<blockquote>${response}</blockquote>`, { parse_mode: 'HTML' });
+});
+
 bot.on('message', async (ctx) => {
   const userTgId = ctx.from?.id;
   const message = ctx.message?.text;
@@ -136,6 +147,10 @@ bot.on('message', async (ctx) => {
   }
 
   if (userStates[userTgId] === STATES.WAITING_FOR_NEW_WORD) {
+    const isExistsWord = await prisma.word.findFirst({ where: { word: message } });
+    if (isExistsWord) {
+      return ctx.reply('Такое слово уже существует.');
+    }
     await addWord(userTgId, message);
     userStates[userTgId] = '';
     return ctx.reply(`Слово успешно добавлено: ${message}`);
